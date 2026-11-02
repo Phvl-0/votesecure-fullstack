@@ -14,7 +14,7 @@ import {
 } from "@/utils/electionUtils";
 import { CandidateForm } from "@/components/candidates/CandidateForm";
 import { CandidateGrid } from "@/components/candidates/CandidateGrid";
-import { supabase } from "@/integrations/supabase/client";
+import { getSession } from "@/lib/api";
 import { format } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -34,67 +34,31 @@ const ElectionDetails = () => {
   const castVoteMutation = useCastVote();
 
   useEffect(() => {
-    const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session) {
-        toast({
-          title: "Authentication required",
-          description: "Please log in to view election details",
-          variant: "destructive",
-        });
-        navigate("/login");
-        return;
-      }
+    const session = getSession();
 
-      // Check if user is admin
-      const { data, error } = await supabase.rpc('has_role', {
-        '_role': 'admin'
+    if (!session) {
+      toast({
+        title: "Authentication required",
+        description: "Please log in to view election details",
+        variant: "destructive",
       });
+      navigate("/login");
+      return;
+    }
 
-      if (error) {
-        console.error('Error checking admin role:', error);
-      } else {
-        setIsAdmin(!!data);
-      }
-    };
-
-    checkAuth();
+    // The role comes from the token (a display hint; the server decides access)
+    setIsAdmin(session.role === "admin");
   }, [navigate, toast]);
 
-  // Set up real-time subscription to election changes
+  // Refresh this election every 15 seconds (replaces the old live-update channel)
   useEffect(() => {
     if (!id) return;
 
-    const channel = supabase
-      .channel(`election-${id}`)
-      .on('postgres_changes', 
-        { 
-          event: '*', 
-          schema: 'public', 
-          table: 'elections',
-          filter: `id=eq.${id}`
-        }, 
-        () => {
-          queryClient.invalidateQueries({ queryKey: ["election", id] });
-        }
-      )
-      .on('postgres_changes', 
-        { 
-          event: '*', 
-          schema: 'public', 
-          table: 'candidates',
-          filter: `election_id=eq.${id}`
-        }, 
-        () => {
-          queryClient.invalidateQueries({ queryKey: ["election", id] });
-        }
-      )
-      .subscribe();
+    const timer = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ["election", id] });
+    }, 15000);
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => clearInterval(timer);
   }, [id, queryClient]);
 
   const handleDeleteCandidate = async (candidateId: string) => {

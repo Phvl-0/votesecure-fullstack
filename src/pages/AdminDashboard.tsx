@@ -8,7 +8,7 @@ import { useElections, useDeleteElection } from "@/utils/electionUtils";
 import ElectionForm from "@/components/elections/ElectionForm";
 import { ElectionTable } from "@/components/elections/ElectionTable";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import { getSession } from "@/lib/api";
 
 const AdminDashboard = () => {
   const { toast } = useToast();
@@ -21,27 +21,19 @@ const AdminDashboard = () => {
   const { data: elections = [], isLoading: electionsLoading } = useElections();
   const deleteElectionMutation = useDeleteElection();
 
-  // Check session activity every minute
+  // Check the token every minute: once it has expired, the session is over
   useEffect(() => {
-    const checkSession = async () => {
-      try {
-        const { data, error } = await supabase.rpc('is_session_active');
-        if (error) throw error;
-        
-        if (!data) {
-          toast({
-            title: "Session Expired",
-            description: "Your admin session has expired. Please log in again.",
-            variant: "destructive",
-          });
-          await supabase.auth.signOut();
-          navigate("/login");
-          return;
-        }
-        setSessionActive(true);
-      } catch (error) {
-        console.error('Error checking session:', error);
+    const checkSession = () => {
+      if (!getSession()) {
+        toast({
+          title: "Session Expired",
+          description: "Your admin session has expired. Please log in again.",
+          variant: "destructive",
+        });
+        navigate("/login");
+        return;
       }
+      setSessionActive(true);
     };
 
     const interval = setInterval(checkSession, 60000); // Check every minute
@@ -53,13 +45,8 @@ const AdminDashboard = () => {
   useEffect(() => {
     const checkAdminRole = async () => {
       try {
-        const { data, error } = await supabase.rpc('has_role', {
-          '_role': 'admin'
-        });
-
-        if (error) throw error;
-
-        if (!data) {
+        // The role comes from the token (a display hint; the server decides access)
+        if (getSession()?.role !== "admin") {
           toast({
             title: "Access Denied",
             description: "You don't have permission to access this page",
@@ -68,12 +55,6 @@ const AdminDashboard = () => {
           navigate("/");
           return;
         }
-
-        // Log admin access
-        await supabase.rpc('log_admin_action', {
-          action: 'admin_dashboard_access',
-          details: JSON.stringify({ timestamp: new Date().toISOString() })
-        });
 
         setIsAdmin(true);
       } catch (error) {
@@ -90,12 +71,6 @@ const AdminDashboard = () => {
   const handleDelete = async (id: string) => {
     try {
       await deleteElectionMutation.mutateAsync(id);
-      
-      // Log deletion action
-      await supabase.rpc('log_admin_action', {
-        action: 'delete_election',
-        details: JSON.stringify({ election_id: id })
-      });
       
       toast({
         title: "Election deleted",
