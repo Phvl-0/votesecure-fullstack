@@ -215,3 +215,107 @@ def test_election_dates_without_timezone_are_rejected(client):
 def test_election_needs_a_title(client):
     resp = client.post("/elections", json=election_payload(-1, 1, title="   "), headers=admin_headers())
     assert resp.status_code == 422
+
+
+# --- Candidates and election removal ---
+def make_election(client, start_days, end_days):
+    resp = client.post("/elections", json=election_payload(start_days, end_days), headers=admin_headers())
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
+def make_candidate(client, election_id, name="Ada"):
+    return client.post(
+        f"/elections/{election_id}/candidates",
+        json={"name": name, "party": "Test Party"},
+        headers=admin_headers(),
+    )
+
+
+def candidate_ids(client, election_id):
+    listed = client.get("/elections", headers=admin_headers()).json()
+    election = next(e for e in listed if e["id"] == election_id)
+    return [c["id"] for c in election["candidates"]]
+
+
+def test_voter_cannot_add_a_candidate(client):
+    election_id = make_election(client, 1, 2)
+    resp = client.post(
+        f"/elections/{election_id}/candidates",
+        json={"name": "Nope"},
+        headers=voter_headers(client),
+    )
+    assert resp.status_code == 403
+
+
+def test_admin_adds_a_candidate_and_it_shows_in_the_election_list(client):
+    election_id = make_election(client, 1, 2)
+    resp = make_candidate(client, election_id)
+    assert resp.status_code == 201
+    assert resp.json()["name"] == "Ada"
+    assert resp.json()["id"] in candidate_ids(client, election_id)
+
+
+def test_candidate_for_unknown_election_is_404(client):
+    resp = client.post(
+        f"/elections/{uuid.uuid4()}/candidates",
+        json={"name": "Ghost"},
+        headers=admin_headers(),
+    )
+    assert resp.status_code == 404
+
+
+def test_candidate_needs_a_name(client):
+    election_id = make_election(client, 1, 2)
+    resp = client.post(
+        f"/elections/{election_id}/candidates",
+        json={"name": "   "},
+        headers=admin_headers(),
+    )
+    assert resp.status_code == 422
+
+
+def test_candidates_cannot_be_added_once_the_election_started(client):
+    election_id = make_election(client, -1, 1)
+    assert make_candidate(client, election_id).status_code == 409
+
+
+def test_admin_deletes_a_candidate_before_the_election_starts(client):
+    election_id = make_election(client, 1, 2)
+    candidate = make_candidate(client, election_id).json()
+    resp = client.delete(f"/candidates/{candidate['id']}", headers=admin_headers())
+    assert resp.status_code == 204
+    assert candidate["id"] not in candidate_ids(client, election_id)
+
+
+def test_voter_cannot_delete_a_candidate(client):
+    election_id = make_election(client, 1, 2)
+    candidate = make_candidate(client, election_id).json()
+    resp = client.delete(f"/candidates/{candidate['id']}", headers=voter_headers(client))
+    assert resp.status_code == 403
+
+
+def test_deleting_an_unknown_candidate_is_404(client):
+    resp = client.delete(f"/candidates/{uuid.uuid4()}", headers=admin_headers())
+    assert resp.status_code == 404
+
+
+def test_admin_deletes_an_election_and_its_candidates_go_with_it(client):
+    election_id = make_election(client, 1, 2)
+    candidate = make_candidate(client, election_id).json()
+    resp = client.delete(f"/elections/{election_id}", headers=admin_headers())
+    assert resp.status_code == 204
+    listed = client.get("/elections", headers=admin_headers()).json()
+    assert election_id not in [e["id"] for e in listed]
+    assert client.delete(f"/candidates/{candidate['id']}", headers=admin_headers()).status_code == 404
+
+
+def test_voter_cannot_delete_an_election(client):
+    election_id = make_election(client, 1, 2)
+    resp = client.delete(f"/elections/{election_id}", headers=voter_headers(client))
+    assert resp.status_code == 403
+
+
+def test_deleting_an_unknown_election_is_404(client):
+    resp = client.delete(f"/elections/{uuid.uuid4()}", headers=admin_headers())
+    assert resp.status_code == 404
