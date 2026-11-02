@@ -486,3 +486,34 @@ def test_live_elections_come_before_ended_ones(client, open_election):
     ended = make_election(client, -2, -1)
     ids = [r["id"] for r in client.get("/results", headers=voter_headers(client)).json()]
     assert ids.index(live_id) < ids.index(ended)
+
+
+# --- My votes ---
+def test_my_votes_without_token_is_rejected(client):
+    assert client.get("/me/votes").status_code == 401
+
+
+def test_my_votes_lists_only_my_own_votes(client, open_election):
+    election_id, cand_a, cand_b = open_election
+    voter_a = voter_headers(client)
+    voter_b = voter_headers(client)
+    vote_a = cast(client, election_id, cand_a, voter_a)
+    assert vote_a.status_code == 201
+    assert cast(client, election_id, cand_b, voter_b).status_code == 201
+    mine = client.get("/me/votes", headers=voter_a)
+    assert mine.status_code == 200
+    rows = mine.json()
+    assert len(rows) == 1
+    assert rows[0]["election_id"] == election_id
+    assert rows[0]["candidate_id"] == cand_a
+    assert rows[0]["candidates"]["name"] == "Ada"
+    assert rows[0]["elections"]["status"] == "active"
+    assert rows[0]["created_at"]
+    theirs = client.get("/me/votes", headers=voter_b)
+    assert vote_a.json()["id"] not in theirs.text
+
+
+def test_my_votes_is_empty_for_a_new_voter(client):
+    resp = client.get("/me/votes", headers=voter_headers(client))
+    assert resp.status_code == 200
+    assert resp.json() == []
