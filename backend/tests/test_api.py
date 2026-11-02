@@ -1,6 +1,9 @@
 import base64
 import json
+import threading
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -319,3 +322,106 @@ def test_voter_cannot_delete_an_election(client):
 def test_deleting_an_unknown_election_is_404(client):
     resp = client.delete(f"/elections/{uuid.uuid4()}", headers=admin_headers())
     assert resp.status_code == 404
+
+
+# --- Voting ---
+@pytest.fixture(scope="module")
+def open_election(client):
+    """An election built the way a real one is: candidates first, then it starts."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "title": f"Open {uuid.uuid4().hex[:8]}",
+        "description": "test",
+        "start_date": (now + timedelta(seconds=2)).isoformat(),
+        "end_date": (now + timedelta(hours=1)).isoformat(),
+    }
+    created = client.post("/elections", json=payload, headers=admin_headers())
+    assert created.status_code == 201
+    election_id = created.json()["id"]
+    cand_a = make_candidate(client, election_id, "Ada").json()["id"]
+    cand_b = make_candidate(client, election_id, "Bola").json()["id"]
+    time.sleep(3)
+    return election_id, cand_a, cand_b
+
+
+def cast(client, election_id, candidate_id, headers):
+    return client.post(
+        f"/elections/{election_id}/votes",
+        json={"candidate_id": candidate_id},
+        headers=headers,
+    )
+
+
+def has_voted(client, election_id, headers):
+    return client.get(f"/elections/{election_id}/my-vote", headers=headers).json()["has_voted"]
+
+
+def test_vote_without_token_is_rejected(client, open_election):
+    election_id, cand_a, _ = open_election
+    resp = client.post(f"/elections/{election_id}/votes", json={"candidate_id": cand_a})
+    assert resp.status_code == 401
+
+
+def test_voter_votes_once_and_my_vote_reflects_it(client, open_election):
+    election_id, cand_a, _ = open_election
+    voter = voter_headers(client)
+    other = voter_headers(client)
+    assert has_voted(client, election_id, voter) is False
+    resp = cast(client, election_id, cand_a, voter)
+    assert resp.status_code == 201
+    assert cand_a not in resp.text
+    assert has_voted(client, election_id, voter) is True
+    assert has_voted(client, election_id, other) is False
+
+
+def test_second_vote_in_the_same_election_is_refused(client, open_election):
+    election_id, cand_a, cand_b = open_election
+    voter = voter_headers(client)
+    assert cast(client, election_id, cand_a, voter).status_code == 201
+    assert cast(client, election_id, cand_b, voter).status_code == 409
+    assert has_voted(client, election_id, voter) is True
+
+
+def test_cannot_vote_before_the_election_starts(client):
+    election_id = make_election(client, 1, 2)
+    resp = cast(client, election_id, str(uuid.uuid4()), voter_headers(client))
+    assert resp.status_code == 409
+
+
+def test_cannot_vote_after_the_election_ended(client):
+    election_id = make_election(client, -2, -1)
+    resp = cast(client, election_id, str(uuid.uuid4()), voter_headers(client))
+    assert resp.status_code == 409
+
+
+def test_candidate_from_another_election_is_refused(client, open_election):
+    election_id, _, _ = open_election
+    other_election = make_election(client, 1, 2)
+    foreign = make_candidate(client, other_election).json()["id"]
+    resp = cast(client, election_id, foreign, voter_headers(client))
+    assert resp.status_code == 422
+
+
+def test_vote_in_unknown_election_is_404(client):
+    resp = cast(client, str(uuid.uuid4()), str(uuid.uuid4()), voter_headers(client))
+    assert resp.status_code == 404
+
+
+def test_token_for_unknown_user_cannot_vote(client, open_election):
+    election_id, cand_a, _ = open_election
+    resp = cast(client, election_id, cand_a, admin_headers())
+    assert resp.status_code == 401
+
+
+def test_two_simultaneous_votes_from_one_voter_count_once(client, open_election):
+    election_id, cand_a, cand_b = open_election
+    voter = voter_headers(client)
+    barrier = threading.Barrier(2)
+
+    def fire(candidate_id):
+        barrier.wait()
+        return cast(client, election_id, candidate_id, voter).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(fire, [cand_a, cand_b]))
+    assert sorted(results) == [201, 409]

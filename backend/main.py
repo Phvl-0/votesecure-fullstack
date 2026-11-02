@@ -9,11 +9,12 @@ import jwt
 from jwt import PyJWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.exc import IntegrityError
 
 # Local module imports
 from security import verify_password, hash_password
 from database import engine, Base, get_db
-from models import UserModel, ElectionModel, CandidateModel
+from models import UserModel, ElectionModel, CandidateModel, VoteModel
 
 # 1. LIFESPAN MANAGEMENT (Replaces deprecated @app.on_event)
 @asynccontextmanager
@@ -293,3 +294,59 @@ async def delete_election(
         raise HTTPException(status_code=404, detail="Election not found")
     await db.delete(election)
     await db.commit()
+
+
+# 8. VOTING
+class VoteCreate(BaseModel):
+    candidate_id: str
+
+
+@app.post("/elections/{election_id}/votes", status_code=status.HTTP_201_CREATED)
+async def cast_vote(
+    election_id: str,
+    data: VoteCreate,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    election = await db.get(ElectionModel, election_id)
+    if election is None:
+        raise HTTPException(status_code=404, detail="Election not found")
+    if election_status(election.start_date, election.end_date) != "active":
+        raise HTTPException(status_code=409, detail="Voting is not open for this election")
+    candidate = await db.get(CandidateModel, data.candidate_id)
+    if candidate is None or candidate.election_id != election_id:
+        raise HTTPException(status_code=422, detail="Candidate does not belong to this election")
+    user = await db.get(UserModel, current_user["user_id"])
+    if user is None:
+        raise HTTPException(status_code=401, detail="Unknown user")
+    vote = VoteModel(
+        id=str(uuid.uuid4()),
+        election_id=election_id,
+        candidate_id=data.candidate_id,
+        user_id=user.id,
+    )
+    db.add(vote)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="You have already voted in this election")
+    return {"id": vote.id, "election_id": election_id}
+
+
+@app.get("/elections/{election_id}/my-vote")
+async def my_vote(
+    election_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    election = await db.get(ElectionModel, election_id)
+    if election is None:
+        raise HTTPException(status_code=404, detail="Election not found")
+    result = await db.execute(
+        select(VoteModel.id).where(
+            VoteModel.election_id == election_id,
+            VoteModel.user_id == current_user["user_id"],
+        )
+    )
+    return {"has_voted": result.first() is not None}
