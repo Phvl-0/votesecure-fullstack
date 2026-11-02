@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import Layout from "@/components/Layout";
-import { supabase } from "@/integrations/supabase/client";
+import { api, getSession } from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast";
 import { User, ListChecks } from "lucide-react";
 
@@ -18,7 +18,7 @@ const Profile = () => {
 
   useEffect(() => {
     const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      const session = getSession();
       
       if (!session) {
         toast({
@@ -30,53 +30,26 @@ const Profile = () => {
         return;
       }
       
-      fetchUserData(session.user.id);
+      fetchUserData();
     };
 
     checkAuth();
   }, [navigate, toast]);
 
-  const fetchUserData = async (userId: string) => {
+  const fetchUserData = async () => {
     try {
       setLoading(true);
       
-      // Fetch user details
-      const { data: user, error: userError } = await supabase.auth.getUser();
-      
-      if (userError) throw userError;
-      
-      // Fetch roles
-      const { data: isAdmin, error: roleError } = await supabase.rpc('has_role', {
-        '_role': 'admin'
-      });
-      
-      if (roleError) throw roleError;
-      
-      // Fetch voting history
-      const { data: votes, error: votesError } = await supabase
-        .from('votes')
-        .select(`
-          id,
-          created_at,
-          election_id,
-          candidate_id,
-          elections (
-            title,
-            status
-          ),
-          candidates (
-            name
-          )
-        `)
-        .eq('user_id', userId);
-      
-      if (votesError) throw votesError;
-      
+      // Email and role come from the token (a display hint; the server enforces access).
+      // The history is the caller's own votes, taken from the token on the server.
+      const session = getSession();
+      const votes = await api.myVotes();
+
       setUserDetails({
-        email: user.user?.email,
-        isAdmin: isAdmin,
+        email: session?.email,
+        isAdmin: session?.role === "admin",
       });
-      
+
       setVoteHistory(votes || []);
     } catch (error) {
       console.error('Error fetching user data:', error);

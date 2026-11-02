@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import Layout from "@/components/Layout";
-import { supabase } from "@/integrations/supabase/client";
+import { api, getSession } from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -39,7 +39,7 @@ const Results = () => {
 
   useEffect(() => {
     const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      const session = getSession();
       
       if (!session) {
         toast({
@@ -54,95 +54,32 @@ const Results = () => {
     checkAuth();
   }, [navigate, toast]);
 
-  // Set up real-time subscription to vote changes
+  // Refresh the tallies every 15 seconds (replaces the old live-update channel).
   useEffect(() => {
-    const channel = supabase
-      .channel('election-results-changes')
-      .on('postgres_changes', 
-        { 
-          event: '*', 
-          schema: 'public', 
-          table: 'votes' 
-        }, 
-        (payload) => {
-          console.log("Real-time vote update received:", payload);
-          // Invalidate the query to refetch data when votes change
-          queryClient.invalidateQueries({ queryKey: ['electionResults'] });
-          setLastUpdated(new Date());
-        }
-      )
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'elections' },
-        () => {
-          queryClient.invalidateQueries({ queryKey: ['electionResults'] });
-          setLastUpdated(new Date());
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    const timer = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ['electionResults'] });
+      setLastUpdated(new Date());
+    }, 15000);
+    return () => clearInterval(timer);
   }, [queryClient]);
 
   const fetchResults = async (): Promise<ElectionResult[]> => {
-    // Fetch both live (active) and completed elections so voters see live tallies
-    const { data: elections, error: electionsError } = await supabase
-      .from('elections')
-      .select('*')
-      .in('status', ['active', 'ended']);
-
-    if (electionsError) throw electionsError;
-
-    if (!elections.length) return [];
-
-    // For each election, fetch results
-    const results = await Promise.all(
-      elections.map(async (election) => {
-        // Get all votes for this election
-        const { data: votes, error: votesError } = await supabase
-          .from('votes')
-          .select('candidate_id')
-          .eq('election_id', election.id);
-
-        if (votesError) throw votesError;
-
-        // Count votes per candidate
-        const voteCount: Record<string, number> = {};
-        votes.forEach(vote => {
-          voteCount[vote.candidate_id] = (voteCount[vote.candidate_id] || 0) + 1;
-        });
-
-        // Get candidate details
-        const { data: candidates, error: candidatesError } = await supabase
-          .from('candidates')
-          .select('*')
-          .eq('election_id', election.id);
-
-        if (candidatesError) throw candidatesError;
-
-        // Format results and add colors for pie chart
-        const candidateResults: VoteResult[] = candidates.map((candidate, index) => ({
-          candidateId: candidate.id,
-          candidateName: candidate.name,
-          party: candidate.party,
-          voteCount: voteCount[candidate.id] || 0,
-          color: COLORS[index % COLORS.length]
-        }));
-
-        return {
-          id: election.id,
-          title: election.title,
-          endDate: election.end_date,
-          totalVotes: votes.length,
-          results: candidateResults,
-          status: election.status,
-        };
-      })
-    );
-
-    // Live elections first
-    return results.sort((a, b) => (a.status === 'ended' ? 1 : 0) - (b.status === 'ended' ? 1 : 0));
+    // The server counts the votes, hides upcoming elections and puts live ones first.
+    const rows = await api.getResults();
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      endDate: row.end_date,
+      totalVotes: row.total_votes,
+      status: row.status,
+      results: row.results.map((r, index) => ({
+        candidateId: r.candidate_id,
+        candidateName: r.candidate_name,
+        party: r.party ?? "",
+        voteCount: r.vote_count,
+        color: COLORS[index % COLORS.length],
+      })),
+    }));
   };
 
   const { data: electionResults = [], isLoading, error } = useQuery({
