@@ -146,3 +146,72 @@ def test_admin_endpoint_allows_an_admin_and_hides_password_hashes(client):
     assert email in [u["email"] for u in resp.json()]
     assert "hashed_password" not in resp.text
     assert "$2b$" not in resp.text
+
+
+# --- Elections ---
+def admin_headers():
+    token = create_access_token({"sub": "admin-test", "role": "admin", "email": "admin@example.com"})
+    return bearer(token)
+
+
+def voter_headers(client):
+    email = new_email()
+    register(client, email)
+    return bearer(get_token(client, email))
+
+
+def election_payload(start_days, end_days, title=None):
+    now = datetime.now(timezone.utc)
+    return {
+        "title": title or f"Election {uuid.uuid4().hex[:8]}",
+        "description": "test",
+        "start_date": (now + timedelta(days=start_days)).isoformat(),
+        "end_date": (now + timedelta(days=end_days)).isoformat(),
+    }
+
+
+def test_election_list_without_token_is_rejected(client):
+    assert client.get("/elections").status_code == 401
+
+
+def test_voter_cannot_create_an_election(client):
+    resp = client.post("/elections", json=election_payload(-1, 1), headers=voter_headers(client))
+    assert resp.status_code == 403
+
+
+def test_admin_creates_an_election_and_voter_sees_it(client):
+    payload = election_payload(-1, 1)
+    created = client.post("/elections", json=payload, headers=admin_headers())
+    assert created.status_code == 201
+    body = created.json()
+    assert body["status"] == "active"
+    assert body["candidates"] == []
+    assert "total_votes" not in body
+    listed = client.get("/elections", headers=voter_headers(client))
+    assert listed.status_code == 200
+    assert body["id"] in [e["id"] for e in listed.json()]
+
+
+def test_election_status_comes_from_the_dates(client):
+    upcoming = client.post("/elections", json=election_payload(1, 2), headers=admin_headers())
+    ended = client.post("/elections", json=election_payload(-2, -1), headers=admin_headers())
+    assert upcoming.json()["status"] == "upcoming"
+    assert ended.json()["status"] == "ended"
+
+
+def test_election_with_end_before_start_is_rejected(client):
+    resp = client.post("/elections", json=election_payload(2, 1), headers=admin_headers())
+    assert resp.status_code == 422
+
+
+def test_election_dates_without_timezone_are_rejected(client):
+    payload = election_payload(-1, 1)
+    payload["start_date"] = "2030-01-01T10:00:00"
+    payload["end_date"] = "2030-01-02T10:00:00"
+    resp = client.post("/elections", json=payload, headers=admin_headers())
+    assert resp.status_code == 422
+
+
+def test_election_needs_a_title(client):
+    resp = client.post("/elections", json=election_payload(-1, 1, title="   "), headers=admin_headers())
+    assert resp.status_code == 422

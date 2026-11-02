@@ -13,7 +13,7 @@ from sqlalchemy.future import select
 # Local module imports
 from security import verify_password, hash_password
 from database import engine, Base, get_db
-from models import UserModel
+from models import UserModel, ElectionModel, CandidateModel
 
 # 1. LIFESPAN MANAGEMENT (Replaces deprecated @app.on_event)
 @asynccontextmanager
@@ -144,3 +144,79 @@ async def list_users(
         {"id": u.id, "email": u.email, "role": u.role, "is_active": u.is_active}
         for u in users
     ]
+
+
+# 6. ELECTIONS
+class ElectionCreate(BaseModel):
+    title: str
+    description: str | None = None
+    start_date: datetime
+    end_date: datetime
+
+
+def election_status(start_date: datetime, end_date: datetime) -> str:
+    """Decided by the server's clock, never by the browser's."""
+    now = datetime.now(timezone.utc)
+    if now < start_date:
+        return "upcoming"
+    if now <= end_date:
+        return "active"
+    return "ended"
+
+
+def election_to_dict(election: ElectionModel, candidates: list) -> dict:
+    return {
+        "id": election.id,
+        "title": election.title,
+        "description": election.description,
+        "start_date": election.start_date,
+        "end_date": election.end_date,
+        "status": election_status(election.start_date, election.end_date),
+        "candidates": [
+            {"id": c.id, "name": c.name, "party": c.party, "bio": c.bio, "image": c.image}
+            for c in candidates
+        ],
+    }
+
+
+@app.get("/elections")
+async def list_elections(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(ElectionModel).order_by(ElectionModel.created_at.desc()))
+    elections = result.scalars().all()
+    by_election = {e.id: [] for e in elections}
+    if by_election:
+        cand_result = await db.execute(
+            select(CandidateModel).where(CandidateModel.election_id.in_(list(by_election)))
+        )
+        for c in cand_result.scalars().all():
+            by_election[c.election_id].append(c)
+    return [election_to_dict(e, by_election[e.id]) for e in elections]
+
+
+@app.post("/elections", status_code=status.HTTP_201_CREATED)
+async def create_election(
+    data: ElectionCreate,
+    admin: dict = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    title = data.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Title is required")
+    if data.start_date.tzinfo is None or data.end_date.tzinfo is None:
+        raise HTTPException(status_code=422, detail="Dates must include a timezone")
+    if data.end_date <= data.start_date:
+        raise HTTPException(status_code=422, detail="End date must be after the start date")
+    election = ElectionModel(
+        id=str(uuid.uuid4()),
+        title=title,
+        description=data.description,
+        start_date=data.start_date,
+        end_date=data.end_date,
+    )
+    db.add(election)
+    await db.commit()
+    await db.refresh(election)
+    return election_to_dict(election, [])
