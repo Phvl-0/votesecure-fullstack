@@ -1,7 +1,6 @@
-
-import React from 'react';
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { api, getSession } from "@/lib/api";
+import type { ApiCandidate, ApiElection } from "@/lib/api";
 
 export interface Candidate {
   id: string;
@@ -10,8 +9,8 @@ export interface Candidate {
   party: string;
   bio: string;
   image?: string;
-  created_at: string;
-  updated_at: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface Election {
@@ -23,8 +22,8 @@ export interface Election {
   status: string;
   total_votes: number;
   image?: string;
-  created_at: string;
-  updated_at: string;
+  created_at?: string;
+  updated_at?: string;
   candidates?: Candidate[];
 }
 
@@ -36,217 +35,108 @@ export interface Vote {
   created_at?: string;
 }
 
+// --- API shapes -> the shapes the pages already use ---
+const toCandidate = (c: ApiCandidate, electionId: string): Candidate => ({
+  id: c.id,
+  election_id: c.election_id ?? electionId,
+  name: c.name,
+  party: c.party ?? "",
+  bio: c.bio ?? "",
+  image: c.image ?? undefined,
+});
+
+const toElection = (e: ApiElection, totalVotes: number): Election => ({
+  id: e.id,
+  title: e.title,
+  description: e.description ?? "",
+  start_date: e.start_date,
+  end_date: e.end_date,
+  status: e.status,
+  total_votes: totalVotes,
+  candidates: e.candidates.map((c) => toCandidate(c, e.id)),
+});
+
+// The API has no stored vote counter: totals come from /results, which counts the votes.
+// Upcoming elections are not in /results, so they get 0.
 const fetchElections = async (): Promise<Election[]> => {
-  const { data, error } = await supabase
-    .from('elections')
-    .select(`
-      *,
-      candidates (*)
-    `)
-    .order('created_at', { ascending: false });
-
-  if (error) throw error;
-
-  // Update the status based on dates
-  const now = new Date();
-  return (data || []).map(election => {
-    const startDate = new Date(election.start_date);
-    const endDate = new Date(election.end_date);
-    
-    let calculatedStatus = election.status;
-    if (now < startDate) {
-      calculatedStatus = 'upcoming';
-    } else if (now >= startDate && now <= endDate) {
-      calculatedStatus = 'active';
-    } else if (now > endDate) {
-      calculatedStatus = 'ended';
-    }
-    
-    // If the status has changed, update it in the database
-    if (calculatedStatus !== election.status) {
-      supabase
-        .from('elections')
-        .update({ status: calculatedStatus })
-        .eq('id', election.id)
-        .then(({ error }) => {
-          if (error) console.error('Error updating election status:', error);
-        });
-    }
-    
-    return {
-      ...election,
-      status: calculatedStatus
-    };
-  });
+  const [elections, results] = await Promise.all([api.listElections(), api.getResults()]);
+  const totals = new Map<string, number>(
+    results.map((r): [string, number] => [r.id, r.total_votes])
+  );
+  return elections.map((e) => toElection(e, totals.get(e.id) ?? 0));
 };
 
+// There is no single-election endpoint yet, so pick it from the list.
 const fetchElection = async (id: string): Promise<Election | null> => {
-  const { data, error } = await supabase
-    .from('elections')
-    .select(`
-      *,
-      candidates (*)
-    `)
-    .eq('id', id)
-    .single();
-
-  if (error) {
-    if (error.code === 'PGRST116') return null; // No rows returned
-    throw error;
-  }
-  
-  return data;
+  const elections = await fetchElections();
+  return elections.find((e) => e.id === id) ?? null;
 };
 
-const addElection = async (election: Omit<Election, 'id' | 'total_votes' | 'created_at' | 'updated_at'>): Promise<Election> => {
-  const { data, error } = await supabase
-    .from('elections')
-    .insert([
-      {
-        ...election,
-        total_votes: 0
-      }
-    ])
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data;
+const addElection = async (
+  election: Omit<Election, "id" | "total_votes" | "created_at" | "updated_at">
+): Promise<Election> => {
+  const created = await api.createElection({
+    title: election.title,
+    description: election.description,
+    start_date: election.start_date,
+    end_date: election.end_date,
+  });
+  return toElection(created, 0);
 };
 
 const deleteElection = async (id: string): Promise<void> => {
-  const { error } = await supabase
-    .from('elections')
-    .delete()
-    .eq('id', id);
-
-  if (error) throw error;
+  await api.deleteElection(id);
 };
 
-const addCandidate = async ({ 
-  electionId, 
-  candidate 
-}: { 
-  electionId: string; 
-  candidate: Omit<Candidate, 'id' | 'election_id' | 'created_at' | 'updated_at'>; 
-}): Promise<Candidate> => {
-  const { data, error } = await supabase
-    .from('candidates')
-    .insert([
-      {
-        ...candidate,
-        election_id: electionId
-      }
-    ])
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data;
-};
-
-const deleteCandidate = async ({ 
-  electionId, 
-  candidateId 
-}: { 
-  electionId: string; 
-  candidateId: string; 
-}): Promise<void> => {
-  const { error } = await supabase
-    .from('candidates')
-    .delete()
-    .eq('id', candidateId)
-    .eq('election_id', electionId);
-
-  if (error) throw error;
-};
-
-const castVote = async ({
+const addCandidate = async ({
   electionId,
-  candidateId
+  candidate,
+}: {
+  electionId: string;
+  candidate: Omit<Candidate, "id" | "election_id" | "created_at" | "updated_at">;
+}): Promise<Candidate> => {
+  const created = await api.addCandidate(electionId, {
+    name: candidate.name,
+    party: candidate.party,
+    bio: candidate.bio,
+    image: candidate.image,
+  });
+  return toCandidate(created, electionId);
+};
+
+// The API only needs the candidate id; electionId stays in the signature for the callers.
+const deleteCandidate = async ({
+  candidateId,
 }: {
   electionId: string;
   candidateId: string;
 }): Promise<void> => {
-  // Get the current user
-  const { data: { user } } = await supabase.auth.getUser();
-  
-  if (!user) throw new Error('You must be logged in to vote');
-  
-  // Check if the user has already voted in this election
-  const { data: existingVotes, error: checkError } = await supabase
-    .from('votes')
-    .select('*')
-    .eq('election_id', electionId)
-    .eq('user_id', user.id);
-    
-  if (checkError) throw checkError;
-  
-  if (existingVotes && existingVotes.length > 0) {
-    throw new Error('You have already voted in this election');
-  }
-  
-  // Cast the vote
-  const { error } = await supabase
-    .from('votes')
-    .insert([{
-      election_id: electionId,
-      candidate_id: candidateId,
-      user_id: user.id
-    }]);
-    
-  if (error) throw error;
-  
-  // Update the total votes count
-  const { error: updateError } = await supabase
-    .rpc('increment_election_votes', { election_id: electionId });
-    
-  if (updateError) throw updateError;
+  await api.deleteCandidate(candidateId);
+};
+
+// The voter is the person in the token; the browser never says who is voting.
+const castVote = async ({
+  electionId,
+  candidateId,
+}: {
+  electionId: string;
+  candidateId: string;
+}): Promise<void> => {
+  await api.castVote(electionId, candidateId);
 };
 
 const checkIfUserVoted = async (electionId: string): Promise<boolean> => {
-  // Get the current user
-  const { data: { user } } = await supabase.auth.getUser();
-  
-  if (!user) return false;
-  
-  const { data, error } = await supabase
-    .from('votes')
-    .select('*')
-    .eq('election_id', electionId)
-    .eq('user_id', user.id);
-    
-  if (error) throw error;
-  
-  return data && data.length > 0;
+  if (!getSession()) return false;
+  return api.hasVoted(electionId);
 };
 
+// --- Hooks: same names, same cache keys as before ---
 export const useElections = () => {
-  const queryClient = useQueryClient();
-
-  React.useEffect(() => {
-    const channel = supabase
-      .channel('election-changes')
-      .on('postgres_changes', 
-        { 
-          event: '*', 
-          schema: 'public', 
-          table: 'elections' 
-        }, 
-        () => {
-          queryClient.invalidateQueries({ queryKey: ['elections'] });
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [queryClient]);
-
   return useQuery({
     queryKey: ["elections"],
     queryFn: fetchElections,
+    // Replaces the old live-update channel: refresh every 15 seconds.
+    refetchInterval: 15000,
   });
 };
 
@@ -260,7 +150,7 @@ export const useElection = (id: string | undefined) => {
 
 export const useAddElection = () => {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: addElection,
     onSuccess: () => {
@@ -271,7 +161,7 @@ export const useAddElection = () => {
 
 export const useDeleteElection = () => {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: deleteElection,
     onSuccess: () => {
@@ -282,7 +172,7 @@ export const useDeleteElection = () => {
 
 export const useAddCandidate = () => {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: addCandidate,
     onSuccess: () => {
@@ -293,7 +183,7 @@ export const useAddCandidate = () => {
 
 export const useDeleteCandidate = () => {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: deleteCandidate,
     onSuccess: () => {
@@ -304,7 +194,7 @@ export const useDeleteCandidate = () => {
 
 export const useCastVote = () => {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: castVote,
     onSuccess: (_, variables) => {
