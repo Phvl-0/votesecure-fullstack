@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardContent, CardFooter } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { Link } from "react-router-dom";
 
 const Register = () => {
@@ -32,36 +32,15 @@ const Register = () => {
     setLoading(true);
 
     try {
-      const { data, error } = await supabase.auth.signUp({
-        email: normalizedEmail,
-        password,
-        options: {
-          emailRedirectTo: window.location.origin,
-        },
-      });
-
-      if (error) {
-        throw error;
-      }
-
-      if (!data.user || data.user.identities?.length === 0) {
-        throw new Error("This email is already registered");
-      }
-
-      if (data.session) {
-        toast({
-          title: "Registration successful!",
-          description: "Your account is ready.",
-        });
-        navigate("/elections", { replace: true });
-        return;
-      }
+      await api.register(normalizedEmail, password);
+      // The API returns no token on sign-up, so log in right away.
+      await api.login(normalizedEmail, password);
 
       toast({
-        title: "Check your email",
-        description: "Open the confirmation link, then sign in.",
+        title: "Registration successful!",
+        description: "Your account is ready.",
       });
-      navigate("/login", { replace: true });
+      navigate("/elections", { replace: true });
     } catch (error: unknown) {
       console.error('Registration error:', error);
 

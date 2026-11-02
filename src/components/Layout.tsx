@@ -10,7 +10,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
-import { supabase } from "@/integrations/supabase/client";
+import { api, getSession, AUTH_CHANGED_EVENT, SESSION_EXPIRED_EVENT } from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast";
 
 interface LayoutProps {
@@ -27,49 +27,40 @@ const Layout = ({ children }: LayoutProps) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        // Check if user is logged in
-        const { data: { session } } = await supabase.auth.getSession();
-        setIsLoggedIn(!!session);
-
-        if (session) {
-          // Check if user is admin
-          const { data, error } = await supabase.rpc('has_role', {
-            '_role': 'admin'
-          });
-          
-          if (error) throw error;
-          setIsAdmin(!!data);
-        }
-      } catch (error) {
-        console.error('Error checking authentication:', error);
-      } finally {
-        setLoading(false);
-      }
+    // Login state and role come from the stored token (a display hint; the server decides access)
+    const refresh = () => {
+      const session = getSession();
+      setIsLoggedIn(!!session);
+      setIsAdmin(session?.role === "admin");
+      setLoading(false);
     };
 
-    checkAuth();
+    refresh();
 
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_IN') {
-        setIsLoggedIn(true);
-        checkAuth();
-      } else if (event === 'SIGNED_OUT') {
-        setIsLoggedIn(false);
-        setIsAdmin(false);
-      }
-    });
+    // The API answered 401 to a request that carried a token: the session is over
+    const onExpired = () => {
+      refresh();
+      toast({
+        title: "Session expired",
+        description: "Please log in again.",
+        variant: "destructive",
+      });
+      navigate("/login");
+    };
 
-    return () => subscription.unsubscribe();
-  }, []);
+    window.addEventListener(AUTH_CHANGED_EVENT, refresh);
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => {
+      window.removeEventListener(AUTH_CHANGED_EVENT, refresh);
+      window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    };
+  }, [navigate, toast]);
 
   const isActive = (path: string) => location.pathname === path;
 
   const handleLogout = async () => {
     try {
-      await supabase.auth.signOut();
+      api.logout();
       toast({
         title: "Logged out",
         description: "You have been successfully logged out.",
