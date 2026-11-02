@@ -48,3 +48,14 @@ class VoteModel(Base):
     candidate_id = Column(String, ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuditLogModel(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(String, primary_key=True, index=True)
+    # No foreign key on purpose: the trail must outlive the user it describes.
+    user_id = Column(String, index=True, nullable=False)
+    action = Column(String, index=True, nullable=False)
+    details = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
