@@ -4,6 +4,7 @@
 const BASE_URL: string = import.meta.env.VITE_API_URL ?? "/api";
 const TOKEN_KEY = "votesecure_token";
 export const SESSION_EXPIRED_EVENT = "votesecure:session-expired";
+export const AUTH_CHANGED_EVENT = "votesecure:auth-changed";
 
 export class ApiError extends Error {
   status: number;
@@ -179,10 +180,14 @@ export const api = {
       auth: false,
     });
     setToken(data.access_token);
+    window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
     return getSession();
   },
 
-  logout: () => clearToken(),
+  logout: () => {
+    clearToken();
+    window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
+  },
 
   listElections: () => request<ApiElection[]>("/elections"),
 
