@@ -400,3 +400,33 @@ async def get_results(
         })
     results.sort(key=lambda r: r["status"] == "ended")
     return results
+
+
+# 10. MY VOTES
+@app.get("/me/votes")
+async def my_votes(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The caller's own voting history, taken from the token, never from the request."""
+    rows = await db.execute(
+        select(VoteModel, ElectionModel, CandidateModel)
+        .join(ElectionModel, ElectionModel.id == VoteModel.election_id)
+        .join(CandidateModel, CandidateModel.id == VoteModel.candidate_id)
+        .where(VoteModel.user_id == current_user["user_id"])
+        .order_by(VoteModel.created_at.desc())
+    )
+    return [
+        {
+            "id": vote.id,
+            "created_at": vote.created_at,
+            "election_id": vote.election_id,
+            "candidate_id": vote.candidate_id,
+            "elections": {
+                "title": election.title,
+                "status": election_status(election.start_date, election.end_date),
+            },
+            "candidates": {"name": candidate.name},
+        }
+        for vote, election, candidate in rows.all()
+    ]
