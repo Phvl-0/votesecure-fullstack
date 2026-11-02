@@ -10,6 +10,7 @@ from jwt import PyJWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.sql import func
 
 # Local module imports
 from security import verify_password, hash_password
@@ -350,3 +351,52 @@ async def my_vote(
         )
     )
     return {"has_voted": result.first() is not None}
+
+
+# 9. RESULTS
+@app.get("/results")
+async def get_results(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Tallies for elections that have started, counted from the votes themselves."""
+    elections = (await db.execute(select(ElectionModel))).scalars().all()
+    visible = [e for e in elections if election_status(e.start_date, e.end_date) != "upcoming"]
+    if not visible:
+        return []
+    ids = [e.id for e in visible]
+    count_rows = await db.execute(
+        select(VoteModel.candidate_id, func.count(VoteModel.id))
+        .where(VoteModel.election_id.in_(ids))
+        .group_by(VoteModel.candidate_id)
+    )
+    counts = {candidate_id: n for candidate_id, n in count_rows.all()}
+    cand_result = await db.execute(
+        select(CandidateModel)
+        .where(CandidateModel.election_id.in_(ids))
+        .order_by(CandidateModel.created_at)
+    )
+    by_election = {election_id: [] for election_id in ids}
+    for c in cand_result.scalars().all():
+        by_election[c.election_id].append(c)
+    results = []
+    for e in visible:
+        rows = [
+            {
+                "candidate_id": c.id,
+                "candidate_name": c.name,
+                "party": c.party,
+                "vote_count": counts.get(c.id, 0),
+            }
+            for c in by_election[e.id]
+        ]
+        results.append({
+            "id": e.id,
+            "title": e.title,
+            "end_date": e.end_date,
+            "status": election_status(e.start_date, e.end_date),
+            "total_votes": sum(r["vote_count"] for r in rows),
+            "results": rows,
+        })
+    results.sort(key=lambda r: r["status"] == "ended")
+    return results

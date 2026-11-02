@@ -425,3 +425,64 @@ def test_two_simultaneous_votes_from_one_voter_count_once(client, open_election)
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(fire, [cand_a, cand_b]))
     assert sorted(results) == [201, 409]
+
+
+# --- Results ---
+def make_open_election(client):
+    now = datetime.now(timezone.utc)
+    payload = {
+        "title": f"Live {uuid.uuid4().hex[:8]}",
+        "description": "test",
+        "start_date": (now + timedelta(seconds=2)).isoformat(),
+        "end_date": (now + timedelta(hours=1)).isoformat(),
+    }
+    created = client.post("/elections", json=payload, headers=admin_headers())
+    assert created.status_code == 201
+    election_id = created.json()["id"]
+    cand_a = make_candidate(client, election_id, "Ada").json()["id"]
+    cand_b = make_candidate(client, election_id, "Bola").json()["id"]
+    time.sleep(3)
+    return election_id, cand_a, cand_b
+
+
+def results_for(client, election_id):
+    resp = client.get("/results", headers=voter_headers(client))
+    assert resp.status_code == 200
+    return next((r for r in resp.json() if r["id"] == election_id), None)
+
+
+def test_results_without_token_are_rejected(client):
+    assert client.get("/results").status_code == 401
+
+
+def test_results_are_counted_from_the_votes(client):
+    election_id, cand_a, cand_b = make_open_election(client)
+    before = results_for(client, election_id)
+    assert before["status"] == "active"
+    assert before["total_votes"] == 0
+    assert [r["vote_count"] for r in before["results"]] == [0, 0]
+    for candidate in (cand_a, cand_a, cand_b):
+        assert cast(client, election_id, candidate, voter_headers(client)).status_code == 201
+    after = results_for(client, election_id)
+    counts = {r["candidate_id"]: r["vote_count"] for r in after["results"]}
+    assert counts == {cand_a: 2, cand_b: 1}
+    assert after["total_votes"] == 3
+    resp = client.get("/results", headers=voter_headers(client))
+    assert "user_id" not in resp.text
+
+
+def test_upcoming_elections_have_no_results_and_ended_ones_do(client):
+    upcoming = make_election(client, 1, 2)
+    ended = make_election(client, -2, -1)
+    assert results_for(client, upcoming) is None
+    row = results_for(client, ended)
+    assert row["status"] == "ended"
+    assert row["total_votes"] == 0
+    assert row["results"] == []
+
+
+def test_live_elections_come_before_ended_ones(client, open_election):
+    live_id = open_election[0]
+    ended = make_election(client, -2, -1)
+    ids = [r["id"] for r in client.get("/results", headers=voter_headers(client)).json()]
+    assert ids.index(live_id) < ids.index(ended)
