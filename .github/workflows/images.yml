@@ -1,0 +1,69 @@
+name: Images
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Name the images
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "API_IMAGE=ghcr.io/${OWNER}/votesecure-fullstack-api" >> "$GITHUB_ENV"
+          echo "WEB_IMAGE=ghcr.io/${OWNER}/votesecure-fullstack-web" >> "$GITHUB_ENV"
+
+      - name: Build the API image
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            -t "${API_IMAGE}:${GITHUB_SHA}" backend
+
+      - name: Build the web image
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            -t "${WEB_IMAGE}:${GITHUB_SHA}" .
+
+      - name: Scan the API image with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.API_IMAGE }}:${{ github.sha }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+
+      - name: Scan the web image with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.WEB_IMAGE }}:${{ github.sha }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+
+      - name: Log in to the GitHub registry
+        if: github.ref == 'refs/heads/main'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Push the images
+        if: github.ref == 'refs/heads/main'
+        run: |
+          docker tag "${API_IMAGE}:${GITHUB_SHA}" "${API_IMAGE}:latest"
+          docker tag "${WEB_IMAGE}:${GITHUB_SHA}" "${WEB_IMAGE}:latest"
+          docker push "${API_IMAGE}:${GITHUB_SHA}"
+          docker push "${API_IMAGE}:latest"
+          docker push "${WEB_IMAGE}:${GITHUB_SHA}"
+          docker push "${WEB_IMAGE}:latest"
