@@ -517,3 +517,62 @@ def test_my_votes_is_empty_for_a_new_voter(client):
     resp = client.get("/me/votes", headers=voter_headers(client))
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+# --- Audit log ---
+def audit_entries(client):
+    resp = client.get("/admin/audit-logs?limit=500", headers=admin_headers())
+    assert resp.status_code == 200
+    return resp.json()
+
+
+def test_audit_log_is_for_admins_only(client):
+    assert client.get("/admin/audit-logs").status_code == 401
+    assert client.get("/admin/audit-logs", headers=voter_headers(client)).status_code == 403
+    assert client.get("/admin/audit-logs", headers=admin_headers()).status_code == 200
+
+
+def test_creating_an_election_is_logged(client):
+    payload = election_payload(1, 2)
+    created = client.post("/elections", json=payload, headers=admin_headers())
+    election_id = created.json()["id"]
+    entries = [
+        e for e in audit_entries(client)
+        if e["action"] == "create_election" and e["details"]["election_id"] == election_id
+    ]
+    assert len(entries) == 1
+    assert entries[0]["user_id"] == "admin-test"
+    assert entries[0]["details"]["title"] == payload["title"]
+
+
+def test_deleting_an_election_is_logged(client):
+    election_id = make_election(client, 1, 2)
+    assert client.delete(f"/elections/{election_id}", headers=admin_headers()).status_code == 204
+    entries = [
+        e for e in audit_entries(client)
+        if e["action"] == "delete_election" and e["details"]["election_id"] == election_id
+    ]
+    assert len(entries) == 1
+    assert entries[0]["user_id"] == "admin-test"
+
+
+def test_candidate_changes_are_logged(client):
+    election_id = make_election(client, 1, 2)
+    candidate = make_candidate(client, election_id).json()
+    assert client.delete(f"/candidates/{candidate['id']}", headers=admin_headers()).status_code == 204
+    actions = sorted(
+        e["action"] for e in audit_entries(client)
+        if e["action"] in ("add_candidate", "delete_candidate")
+        and e["details"].get("election_id") == election_id
+    )
+    assert actions == ["add_candidate", "delete_candidate"]
+
+
+def test_rejected_admin_actions_leave_no_log(client):
+    bad = election_payload(2, 1)
+    by_voter = election_payload(-1, 1)
+    assert client.post("/elections", json=bad, headers=admin_headers()).status_code == 422
+    assert client.post("/elections", json=by_voter, headers=voter_headers(client)).status_code == 403
+    titles = [(e["details"] or {}).get("title") for e in audit_entries(client)]
+    assert bad["title"] not in titles
+    assert by_voter["title"] not in titles

@@ -1,3 +1,4 @@
+import json
 import uuid
 import os
 from contextlib import asynccontextmanager
@@ -15,7 +16,7 @@ from sqlalchemy.sql import func
 # Local module imports
 from security import verify_password, hash_password
 from database import engine, Base, get_db
-from models import UserModel, ElectionModel, CandidateModel, VoteModel
+from models import UserModel, ElectionModel, CandidateModel, VoteModel, AuditLogModel
 
 # 1. LIFESPAN MANAGEMENT (Replaces deprecated @app.on_event)
 @asynccontextmanager
@@ -219,6 +220,12 @@ async def create_election(
         end_date=data.end_date,
     )
     db.add(election)
+    record_audit(db, admin, "create_election", {
+        "election_id": election.id,
+        "title": election.title,
+        "start_date": election.start_date.isoformat(),
+        "end_date": election.end_date.isoformat(),
+    })
     await db.commit()
     await db.refresh(election)
     return election_to_dict(election, [])
@@ -256,6 +263,11 @@ async def add_candidate(
         image=data.image,
     )
     db.add(candidate)
+    record_audit(db, admin, "add_candidate", {
+        "candidate_id": candidate.id,
+        "election_id": election_id,
+        "name": candidate.name,
+    })
     await db.commit()
     await db.refresh(candidate)
     return {
@@ -280,6 +292,11 @@ async def delete_candidate(
     election = await db.get(ElectionModel, candidate.election_id)
     if election_status(election.start_date, election.end_date) != "upcoming":
         raise HTTPException(status_code=409, detail="Candidates can only be changed before the election starts")
+    record_audit(db, admin, "delete_candidate", {
+        "candidate_id": candidate.id,
+        "election_id": candidate.election_id,
+        "name": candidate.name,
+    })
     await db.delete(candidate)
     await db.commit()
 
@@ -293,6 +310,10 @@ async def delete_election(
     election = await db.get(ElectionModel, election_id)
     if election is None:
         raise HTTPException(status_code=404, detail="Election not found")
+    record_audit(db, admin, "delete_election", {
+        "election_id": election.id,
+        "title": election.title,
+    })
     await db.delete(election)
     await db.commit()
 
@@ -429,4 +450,37 @@ async def my_votes(
             "candidates": {"name": candidate.name},
         }
         for vote, election, candidate in rows.all()
+    ]
+
+
+# 11. AUDIT LOG
+def record_audit(db: AsyncSession, admin: dict, action: str, details: dict) -> None:
+    """Add the entry to the same transaction as the admin action it describes."""
+    db.add(AuditLogModel(
+        id=str(uuid.uuid4()),
+        user_id=admin["user_id"],
+        action=action,
+        details=json.dumps(details),
+    ))
+
+
+@app.get("/admin/audit-logs")
+async def list_audit_logs(
+    limit: int = 100,
+    admin: dict = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    limit = max(1, min(limit, 500))
+    result = await db.execute(
+        select(AuditLogModel).order_by(AuditLogModel.created_at.desc()).limit(limit)
+    )
+    return [
+        {
+            "id": a.id,
+            "user_id": a.user_id,
+            "action": a.action,
+            "details": json.loads(a.details) if a.details else None,
+            "created_at": a.created_at,
+        }
+        for a in result.scalars().all()
     ]
