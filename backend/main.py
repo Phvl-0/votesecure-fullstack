@@ -220,3 +220,76 @@ async def create_election(
     await db.commit()
     await db.refresh(election)
     return election_to_dict(election, [])
+
+
+# 7. CANDIDATES AND ELECTION REMOVAL
+class CandidateCreate(BaseModel):
+    name: str
+    party: str | None = None
+    bio: str | None = None
+    image: str | None = None
+
+
+@app.post("/elections/{election_id}/candidates", status_code=status.HTTP_201_CREATED)
+async def add_candidate(
+    election_id: str,
+    data: CandidateCreate,
+    admin: dict = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    election = await db.get(ElectionModel, election_id)
+    if election is None:
+        raise HTTPException(status_code=404, detail="Election not found")
+    if election_status(election.start_date, election.end_date) != "upcoming":
+        raise HTTPException(status_code=409, detail="Candidates can only be changed before the election starts")
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Name is required")
+    candidate = CandidateModel(
+        id=str(uuid.uuid4()),
+        election_id=election_id,
+        name=name,
+        party=data.party,
+        bio=data.bio,
+        image=data.image,
+    )
+    db.add(candidate)
+    await db.commit()
+    await db.refresh(candidate)
+    return {
+        "id": candidate.id,
+        "election_id": candidate.election_id,
+        "name": candidate.name,
+        "party": candidate.party,
+        "bio": candidate.bio,
+        "image": candidate.image,
+    }
+
+
+@app.delete("/candidates/{candidate_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_candidate(
+    candidate_id: str,
+    admin: dict = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    candidate = await db.get(CandidateModel, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    election = await db.get(ElectionModel, candidate.election_id)
+    if election_status(election.start_date, election.end_date) != "upcoming":
+        raise HTTPException(status_code=409, detail="Candidates can only be changed before the election starts")
+    await db.delete(candidate)
+    await db.commit()
+
+
+@app.delete("/elections/{election_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_election(
+    election_id: str,
+    admin: dict = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    election = await db.get(ElectionModel, election_id)
+    if election is None:
+        raise HTTPException(status_code=404, detail="Election not found")
+    await db.delete(election)
+    await db.commit()
