@@ -151,9 +151,7 @@ export interface ApiMyVote {
   id: string;
   created_at: string;
   election_id: string;
-  candidate_id: string;
   elections: { title: string; status: string };
-  candidates: { name: string };
 }
 
 export interface ApiAuditLog {
