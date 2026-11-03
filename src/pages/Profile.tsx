@@ -120,7 +120,7 @@ const Profile = () => {
                       <h3 className="font-medium">{vote.elections?.title}</h3>
                       <Badge>{vote.elections?.status}</Badge>
                     </div>
-                    <p>Voted for: <span className="font-medium">{vote.candidates?.name}</span></p>
+                    <p className="text-sm text-gray-600">Your vote was recorded. Ballots are secret, so your choice is not shown.</p>
                     <p className="text-sm text-gray-500 mt-2">
                       {new Date(vote.created_at).toLocaleDateString()} at {new Date(vote.created_at).toLocaleTimeString()}
                     </p>
