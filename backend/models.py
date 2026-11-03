@@ -37,17 +37,26 @@ class CandidateModel(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
-class VoteModel(Base):
-    __tablename__ = "votes"
+class VoteReceiptModel(Base):
+    """Who has voted in which election. Says nothing about what was chosen."""
+    __tablename__ = "vote_receipts"
     __table_args__ = (
-        UniqueConstraint("election_id", "user_id", name="uq_one_vote_per_election"),
+        UniqueConstraint("election_id", "user_id", name="uq_one_receipt_per_election"),
     )
 
     id = Column(String, primary_key=True, index=True)
     election_id = Column(String, ForeignKey("elections.id", ondelete="CASCADE"), index=True, nullable=False)
-    candidate_id = Column(String, ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class BallotModel(Base):
+    """What was chosen. Deliberately no user and no timestamp, so it cannot be matched to a receipt."""
+    __tablename__ = "ballots"
+
+    id = Column(String, primary_key=True, index=True)
+    election_id = Column(String, ForeignKey("elections.id", ondelete="CASCADE"), index=True, nullable=False)
+    candidate_id = Column(String, ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False)
 
 
 class AuditLogModel(Base):
