@@ -16,7 +16,7 @@ from sqlalchemy.sql import func
 # Local module imports
 from security import verify_password, hash_password
 from database import engine, Base, get_db
-from models import UserModel, ElectionModel, CandidateModel, VoteModel, AuditLogModel
+from models import UserModel, ElectionModel, CandidateModel, VoteReceiptModel, BallotModel, AuditLogModel
 
 # 1. LIFESPAN MANAGEMENT (Replaces deprecated @app.on_event)
 @asynccontextmanager
@@ -341,19 +341,26 @@ async def cast_vote(
     user = await db.get(UserModel, current_user["user_id"])
     if user is None:
         raise HTTPException(status_code=401, detail="Unknown user")
-    vote = VoteModel(
+    # Two rows, ONE transaction. The receipt says who voted, the ballot says what was chosen,
+    # and nothing links them. The receipt's unique rule refuses a second vote and the
+    # rollback then removes the ballot too.
+    receipt = VoteReceiptModel(
+        id=str(uuid.uuid4()),
+        election_id=election_id,
+        user_id=user.id,
+    )
+    db.add(receipt)
+    db.add(BallotModel(
         id=str(uuid.uuid4()),
         election_id=election_id,
         candidate_id=data.candidate_id,
-        user_id=user.id,
-    )
-    db.add(vote)
+    ))
     try:
         await db.commit()
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=409, detail="You have already voted in this election")
-    return {"id": vote.id, "election_id": election_id}
+    return {"id": receipt.id, "election_id": election_id}
 
 
 @app.get("/elections/{election_id}/my-vote")
@@ -366,9 +373,9 @@ async def my_vote(
     if election is None:
         raise HTTPException(status_code=404, detail="Election not found")
     result = await db.execute(
-        select(VoteModel.id).where(
-            VoteModel.election_id == election_id,
-            VoteModel.user_id == current_user["user_id"],
+        select(VoteReceiptModel.id).where(
+            VoteReceiptModel.election_id == election_id,
+            VoteReceiptModel.user_id == current_user["user_id"],
         )
     )
     return {"has_voted": result.first() is not None}
@@ -387,9 +394,9 @@ async def get_results(
         return []
     ids = [e.id for e in visible]
     count_rows = await db.execute(
-        select(VoteModel.candidate_id, func.count(VoteModel.id))
-        .where(VoteModel.election_id.in_(ids))
-        .group_by(VoteModel.candidate_id)
+        select(BallotModel.candidate_id, func.count(BallotModel.id))
+        .where(BallotModel.election_id.in_(ids))
+        .group_by(BallotModel.candidate_id)
     )
     counts = {candidate_id: n for candidate_id, n in count_rows.all()}
     cand_result = await db.execute(
@@ -429,27 +436,24 @@ async def my_votes(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """The caller's own voting history, taken from the token, never from the request."""
+    """The caller's own voting history (which elections, never which candidate), taken from the token."""
     rows = await db.execute(
-        select(VoteModel, ElectionModel, CandidateModel)
-        .join(ElectionModel, ElectionModel.id == VoteModel.election_id)
-        .join(CandidateModel, CandidateModel.id == VoteModel.candidate_id)
-        .where(VoteModel.user_id == current_user["user_id"])
-        .order_by(VoteModel.created_at.desc())
+        select(VoteReceiptModel, ElectionModel)
+        .join(ElectionModel, ElectionModel.id == VoteReceiptModel.election_id)
+        .where(VoteReceiptModel.user_id == current_user["user_id"])
+        .order_by(VoteReceiptModel.created_at.desc())
     )
     return [
         {
-            "id": vote.id,
-            "created_at": vote.created_at,
-            "election_id": vote.election_id,
-            "candidate_id": vote.candidate_id,
+            "id": receipt.id,
+            "created_at": receipt.created_at,
+            "election_id": receipt.election_id,
             "elections": {
                 "title": election.title,
                 "status": election_status(election.start_date, election.end_date),
             },
-            "candidates": {"name": candidate.name},
         }
-        for vote, election, candidate in rows.all()
+        for receipt, election in rows.all()
     ]
 
 

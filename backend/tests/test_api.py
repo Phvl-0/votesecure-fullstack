@@ -495,6 +495,20 @@ def test_live_elections_come_before_ended_ones(client, open_election):
     assert ids.index(live_id) < ids.index(ended)
 
 
+def test_refused_second_vote_leaves_no_extra_ballot(client, open_election):
+    election_id, cand_a, cand_b = open_election
+    voter = voter_headers(client)
+    assert cast(client, election_id, cand_a, voter).status_code == 201
+
+    def total():
+        rows = client.get("/results", headers=voter).json()
+        return next(r for r in rows if r["id"] == election_id)["total_votes"]
+
+    before = total()
+    assert cast(client, election_id, cand_b, voter).status_code == 409
+    assert total() == before
+
+
 # --- My votes ---
 def test_my_votes_without_token_is_rejected(client):
     assert client.get("/me/votes").status_code == 401
@@ -512,9 +526,10 @@ def test_my_votes_lists_only_my_own_votes(client, open_election):
     rows = mine.json()
     assert len(rows) == 1
     assert rows[0]["election_id"] == election_id
-    assert rows[0]["candidate_id"] == cand_a
-    assert rows[0]["candidates"]["name"] == "Ada"
     assert rows[0]["elections"]["status"] == "active"
+    assert "candidate_id" not in rows[0]
+    assert "candidates" not in rows[0]
+    assert "Ada" not in mine.text
     assert rows[0]["created_at"]
     theirs = client.get("/me/votes", headers=voter_b)
     assert vote_a.json()["id"] not in theirs.text

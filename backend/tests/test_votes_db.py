@@ -9,26 +9,24 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from database import Base
-from models import CandidateModel, ElectionModel, UserModel, VoteModel
+from models import BallotModel, ElectionModel, UserModel, VoteReceiptModel
 
 
 def uid():
     return str(uuid.uuid4())
 
 
-async def seed(session, user_id, election_id, candidate_id):
-    """Add one election with one candidate, and one user if it is new."""
+async def seed(session, user_id, election_id):
+    """Add one election, and one user if it is new."""
     now = datetime.now(timezone.utc)
     if user_id:
         session.add(UserModel(id=user_id, email=f"{user_id}@example.com", hashed_password="not-a-real-hash"))
     session.add(ElectionModel(id=election_id, title="Test election", start_date=now, end_date=now + timedelta(days=1)))
     await session.commit()
-    session.add(CandidateModel(id=candidate_id, election_id=election_id, name="Candidate"))
-    await session.commit()
 
 
-def vote(election_id, candidate_id, user_id):
-    return VoteModel(id=uid(), election_id=election_id, candidate_id=candidate_id, user_id=user_id)
+def receipt(election_id, user_id):
+    return VoteReceiptModel(id=uid(), election_id=election_id, user_id=user_id)
 
 
 async def run_with_session(scenario):
@@ -42,36 +40,37 @@ async def run_with_session(scenario):
         await engine.dispose()
 
 
-def test_database_refuses_a_second_vote_in_the_same_election():
+def test_database_refuses_a_second_receipt_in_the_same_election():
     async def scenario(Session):
-        user_id, election_id, cand_a, cand_b = uid(), uid(), uid(), uid()
+        user_id, election_id = uid(), uid()
         async with Session() as s:
-            await seed(s, user_id, election_id, cand_a)
-            s.add(CandidateModel(id=cand_b, election_id=election_id, name="Other"))
+            await seed(s, user_id, election_id)
+        async with Session() as s:
+            s.add(receipt(election_id, user_id))
             await s.commit()
         async with Session() as s:
-            s.add(vote(election_id, cand_a, user_id))
-            await s.commit()
-        async with Session() as s:
-            s.add(vote(election_id, cand_b, user_id))
+            s.add(receipt(election_id, user_id))
             with pytest.raises(IntegrityError):
                 await s.commit()
 
     asyncio.run(run_with_session(scenario))
 
 
-def test_same_person_may_vote_in_a_different_election():
+def test_same_person_may_get_a_receipt_in_a_different_election():
     async def scenario(Session):
-        user_id = uid()
-        first = (uid(), uid())
-        second = (uid(), uid())
+        user_id, first, second = uid(), uid(), uid()
         async with Session() as s:
-            await seed(s, user_id, first[0], first[1])
+            await seed(s, user_id, first)
         async with Session() as s:
-            await seed(s, None, second[0], second[1])
+            await seed(s, None, second)
         async with Session() as s:
-            s.add(vote(first[0], first[1], user_id))
-            s.add(vote(second[0], second[1], user_id))
+            s.add(receipt(first, user_id))
+            s.add(receipt(second, user_id))
             await s.commit()
 
     asyncio.run(run_with_session(scenario))
+
+
+def test_ballots_table_keeps_no_trace_of_who_cast_them():
+    # Secrecy by design: no user column and no timestamp on a ballot.
+    assert {c.name for c in BallotModel.__table__.columns} == {"id", "election_id", "candidate_id"}
