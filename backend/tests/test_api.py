@@ -291,6 +291,13 @@ def test_admin_deletes_a_candidate_before_the_election_starts(client):
     assert candidate["id"] not in candidate_ids(client, election_id)
 
 
+def test_candidate_cannot_be_deleted_once_the_election_started(client, open_election):
+    election_id, cand_a, _ = open_election
+    resp = client.delete(f"/candidates/{cand_a}", headers=admin_headers())
+    assert resp.status_code == 409
+    assert cand_a in candidate_ids(client, election_id)
+
+
 def test_voter_cannot_delete_a_candidate(client):
     election_id = make_election(client, 1, 2)
     candidate = make_candidate(client, election_id).json()
