@@ -26,7 +26,7 @@ services:
   web:
     build: .
     ports:
-      - "127.0.0.1:8089:80"
+      - "127.0.0.1:8089:8080"
     depends_on:
       - api
 volumes:
