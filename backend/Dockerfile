@@ -1,5 +1,5 @@
 FROM python:3.12-slim
-RUN apt-get update && apt-get install -y --only-upgrade apt libapt-pkg7.0 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 RUN useradd --create-home --uid 10001 appuser
 COPY requirements.txt .
