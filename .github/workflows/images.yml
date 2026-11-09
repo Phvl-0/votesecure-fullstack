@@ -85,7 +85,8 @@ jobs:
 
       - name: Run the deploy script on the VM through SSM
         env:
-          INSTANCE_ID: ${{ vars.AWS_INSTANCE_ID }}
+          INSTANCE_ID=$(aws ec2 describe-instances --filters Name=tag:Project,Values=votesecure Name=instance-state-name,Values=running --query 'Reservations[0].Instances[0].InstanceId' --output text)
+          [ "$INSTANCE_ID" != "None" ] || { echo "no running votesecure instance"; exit 1; }
         run: |
           CMD_ID=$(aws ssm send-command --instance-ids "$INSTANCE_ID" --document-name AWS-RunShellScript --parameters "commands=[\"/home/ubuntu/votesecure/deploy.sh ${GITHUB_SHA}\"]" --query Command.CommandId --output text)
           aws ssm wait command-executed --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" || RESULT=failed
