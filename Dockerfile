@@ -13,3 +13,6 @@ USER 101
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 8080
+
+# DRILL: deliberately broken release, reverted right after
+CMD ["sh", "-c", "echo drill-broken-release >&2; exit 1"]
