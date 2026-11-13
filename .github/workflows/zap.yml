@@ -1,0 +1,48 @@
+name: ZAP baseline
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  zap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Make throwaway secrets for this run
+        run: |
+          echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+          echo "SECRET_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      - name: Start the app
+        run: docker compose up -d --build
+
+      - name: Wait for the site to answer
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS -o /dev/null http://127.0.0.1:8089/ && exit 0
+            sleep 5
+          done
+          docker compose ps
+          exit 1
+
+      - name: ZAP baseline scan
+        run: |
+          mkdir -m 777 zap-wrk
+          docker run --rm --network host -v "$PWD/zap-wrk:/zap/wrk:rw" \
+            zaproxy/zap-stable@sha256:030d3df57735dacbb83464854758e674dd9ad01d79d12a129a8e58b1fd384238 \
+            zap-baseline.py -t http://127.0.0.1:8089 -r report.html -I # ZAP stable build 20261026
+
+      - name: Stop the app
+        if: always()
+        run: docker compose down -v
