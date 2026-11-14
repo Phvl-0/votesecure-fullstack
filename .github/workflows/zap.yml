@@ -39,9 +39,10 @@ jobs:
       - name: ZAP baseline scan
         run: |
           mkdir -m 777 zap-wrk
+          cp .zap/rules.tsv zap-wrk/zap-rules.tsv
           docker run --rm --network host -v "$PWD/zap-wrk:/zap/wrk:rw" \
             zaproxy/zap-stable@sha256:030d3df57735dacbb83464854758e674dd9ad01d79d12a129a8e58b1fd384238 \
-            zap-baseline.py -t http://127.0.0.1:8089 -r report.html -I # ZAP stable build 20261026
+            zap-baseline.py -t http://127.0.0.1:8089 -r report.html -c zap-rules.tsv # ZAP stable build 20261026
 
       - name: Stop the app
         if: always()
