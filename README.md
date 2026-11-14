@@ -127,7 +127,7 @@ A clean result means nothing was found by these rules, which is not the same as 
 - The Content-Security-Policy allows inline styles (`style-src 'unsafe-inline'`) because the UI library injects them. Scripts have no exceptions.
 - The ZAP baseline is passive and its crawl of this single-page app is shallow (about seven URLs). It reads responses and sends no attacks, so it cannot find injection flaws.
 - Semgrep flagged the SQLAlchemy `text()` form of a seeded SQL injection but not a `cursor.execute` f-string version, so the rulesets in use have gaps.
-- The frontend writes the login email to the browser console (`Starting login process for: ...`), which should be removed.
+- The scanners do not check logging habits: neither Semgrep nor ZAP flagged the frontend writing the login email to the browser console. That line was found by reading the console and has been removed.
 
 ## Repository layout
 
