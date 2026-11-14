@@ -107,6 +107,8 @@ Each gate was proven by making it fail on purpose:
 
 The first ZAP baseline found a third-party script loaded from another domain and no Content-Security-Policy or Permissions-Policy header. The script was removed, the two headers were added, and the warnings fell from 7 to 4. The four that remain are listed in `.zap/rules.tsv`, each with a written reason. I also opened all eight routes by hand under the new policy, and the browser reported no blocked loads.
 
+Each image build also writes a CycloneDX software bill of materials (SBOM) for both images and keeps them for 30 days as the `sboms` workflow artifact. On the first run the API image listed 108 components and the web image 72. It answers questions such as which version of a library an image contains.
+
 A clean result means nothing was found by these rules, which is not the same as no flaws.
 
 ## Tests
