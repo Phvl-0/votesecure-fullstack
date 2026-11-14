@@ -79,11 +79,35 @@ The role is read from the token, so log out and log in again.
 | `trivy.yml` | Builds the backend image and scans it with Trivy |
 | `frontend.yml` | `npm ci`, TypeScript type-check, production build |
 | `images.yml` | Builds both images, scans both with Trivy, and pushes them to ghcr.io only from `main` |
+| `semgrep.yml` | Semgrep scan of the source code; any finding fails the run |
+| `zap.yml` | Starts the Compose stack in the runner and scans it with the OWASP ZAP baseline |
 
 - Trivy fails the run on HIGH or CRITICAL findings that have a fix. Unfixed findings are ignored. A clean scan means no known vulnerabilities at scan time, not that the app is secure.
 - Images: `ghcr.io/phvl-0/votesecure-fullstack-api` and `ghcr.io/phvl-0/votesecure-fullstack-web`, tagged with the commit SHA and `latest`. The packages are private (the default).
 - All GitHub Actions are pinned by full commit SHA. The only third-party actions are checkout and Trivy; Docker login, build and push are plain commands.
 - Trade-off: the images job holds `packages: write` on every push. The push steps only run on `main`.
+- The `images.yml` workflow also has a deploy job. It runs only from `main` and only when the repository variable `DEPLOY_ENABLED` is `true`, so it is skipped while no server exists.
+
+## Security scanning
+
+Three scanners gate the pipeline, each on a different layer:
+
+| Scanner | Looks at | Fails the run when |
+|---|---|---|
+| Trivy | The built images | A HIGH or CRITICAL vulnerability has a fix |
+| Semgrep 1.183.0 (`semgrep.yml`) | The source code, with the python, secrets, dockerfile and typescript rulesets | Any rule matches (`--error`) |
+| OWASP ZAP baseline (`zap.yml`) | The running app: the Compose stack is started in the runner and scanned through nginx | Any warning that is not listed in `.zap/rules.tsv` |
+
+Semgrep is installed at a pinned version and the ZAP image is pinned by digest. The ZAP run uses throwaway secrets and the stack is torn down afterwards.
+
+Each gate was proven by making it fail on purpose:
+
+- Semgrep: a deliberately injectable SQL query on a throwaway branch failed the run (rule `avoid-sqlalchemy-text`, run 43501222043). The parameterized version passed (run 43501713489). The branch was never merged.
+- ZAP: removing the Content-Security-Policy header on a throwaway pull request failed the run (rule 10038, run 43576676565). Restoring it passed (run 43577009408). The pull request was closed without merging.
+
+The first ZAP baseline found a third-party script loaded from another domain and no Content-Security-Policy or Permissions-Policy header. The script was removed, the two headers were added, and the warnings fell from 7 to 4. The four that remain are listed in `.zap/rules.tsv`, each with a written reason. I also opened all eight routes by hand under the new policy, and the browser reported no blocked loads.
+
+A clean result means nothing was found by these rules, which is not the same as no flaws.
 
 ## Tests
 
@@ -98,6 +122,10 @@ The role is read from the token, so log out and log in again.
 - Ballot secrecy is not cryptographic: someone with full access to the database and server logs could try to match a receipt and a ballot by timing.
 - No migrations: tables are created at startup and never altered, so a schema change on an existing database needs manual SQL.
 - No profile username or avatar, no election images, and no live push updates (pages refresh every 15 seconds). There is no single-election endpoint, so the page picks the election from the list.
+- The Content-Security-Policy allows inline styles (`style-src 'unsafe-inline'`) because the UI library injects them. Scripts have no exceptions.
+- The ZAP baseline is passive and its crawl of this single-page app is shallow (about seven URLs). It reads responses and sends no attacks, so it cannot find injection flaws.
+- Semgrep flagged the SQLAlchemy `text()` form of a seeded SQL injection but not a `cursor.execute` f-string version, so the rulesets in use have gaps.
+- The frontend writes the login email to the browser console (`Starting login process for: ...`), which should be removed.
 
 ## Repository layout
 
