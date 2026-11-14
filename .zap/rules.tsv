@@ -1,0 +1,4 @@
+10049	IGNORE	(only the static front page and favicon; nothing under /api is cacheable)
+10055	IGNORE	(style-src unsafe-inline is a deliberate trade-off for the UI library inline styles; scripts have no exceptions)
+10109	IGNORE	(informational: single page app, crawler coverage is a known limit)
+90004	IGNORE	(cross-origin isolation is not needed here and can break loads)
