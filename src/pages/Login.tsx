@@ -45,7 +45,6 @@ const Login = () => {
     setLoading(true);
 
     try {
-      console.log('Starting login process for:', email);
       
       const session = await api.login(email, password);
 
