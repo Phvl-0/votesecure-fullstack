@@ -1,15 +1,20 @@
 # VoteSecure Lab
 
+[![Tests](https://github.com/Phvl-0/votesecure-fullstack/actions/workflows/tests.yml/badge.svg)](https://github.com/Phvl-0/votesecure-fullstack/actions/workflows/tests.yml) [![Frontend](https://github.com/Phvl-0/votesecure-fullstack/actions/workflows/frontend.yml/badge.svg)](https://github.com/Phvl-0/votesecure-fullstack/actions/workflows/frontend.yml) [![Images](https://github.com/Phvl-0/votesecure-fullstack/actions/workflows/images.yml/badge.svg)](https://github.com/Phvl-0/votesecure-fullstack/actions/workflows/images.yml)
+
+
 A practice lab that mimics real DevSecOps work. A voting app's frontend (Vite, React, TypeScript) talks to my own FastAPI backend instead of Supabase, and everything runs in Docker Compose: nginx, FastAPI and PostgreSQL. Every change goes through a branch and a pull request, CI runs the tests and a Trivy scan, and the images are published to GitHub's registry (ghcr.io).
 
 The live app is a separate repo ([Online-Election-System](https://github.com/Phvl-0/Online-Election-System), Lovable and Supabase) and is untouched by this lab. The API started as [FastAPI-Auth-Compose](https://github.com/Phvl-0/FastAPI-Auth-Compose).
 
 ## Architecture
 
-```
-browser --> nginx (web container) --> FastAPI (api) --> PostgreSQL (db, volume pgdata)
-            serves the React app       14 routes         users, elections, candidates,
-            proxies /api/ to the api                     vote_receipts, ballots, audit_logs
+```mermaid
+flowchart LR
+  user["browser on the host<br/>http://127.0.0.1:8089"] --> web
+  subgraph net["Docker Compose network"]
+    web["web: nginx<br/>serves the React app<br/>proxies /api/ to the api<br/>blocks /api/docs"] --> api["api: FastAPI<br/>14 routes"] --> db[("db: PostgreSQL 16<br/>volume pgdata<br/>users, elections, candidates,<br/>vote_receipts, ballots, audit_logs")]
+  end
 ```
 
 - **web**: nginx serves the built React app (with fallback to `index.html` for client-side routes) and forwards `/api/` to the API, removing the prefix. It blocks `/api/docs`, `/api/redoc` and `/api/openapi.json`, sends `nosniff` and `X-Frame-Options: DENY`, and hides its version.
@@ -63,6 +68,20 @@ The role is read from the token, so log out and log in again.
 - **Election rules:** status (`upcoming`, `active`, `ended`) comes from the server clock. Candidates can only be added or removed while an election is upcoming, so create it with a start a few minutes ahead, add the candidates, wait for the start, then vote.
 
 ## Security design
+
+How a vote is stored (ballot secrecy). Both rows are written in one database transaction, and no column links a receipt to a ballot:
+
+```mermaid
+flowchart TD
+  vote["POST /elections/{id}/votes<br/>voter taken from the token"] --> tx{"one database transaction"}
+  tx --> rec["vote_receipts<br/>election and user, unique pair<br/>records who has voted"]
+  tx --> bal["ballots<br/>election and candidate only<br/>no user, no timestamp<br/>records what was chosen"]
+  rec --> my["GET /elections/{id}/my-vote<br/>returns has_voted only"]
+  bal --> res["GET /results<br/>counted from ballots"]
+```
+
+Limit: someone with full access to the database and the server logs could still match a receipt to a ballot by timing.
+
 
 - **The server decides everything.** Roles are checked per route, the voter is always the token's user (never the request body), and registration ignores any `id` or `role` sent. The browser only decodes the token to decide what to display.
 - **Secret ballots.** A vote writes two rows in one transaction: a receipt in `vote_receipts` (who voted) and a ballot in `ballots` (what was chosen, with no user and no timestamp). Results count ballots, and the history page shows elections only.
